@@ -112,13 +112,6 @@
     .chat-sub{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;margin-top:2px}
     .dot{width:5px;height:5px;border-radius:50%;background:var(--muted);transition:background .3s}
     .dot.on{background:#4ade80;box-shadow:0 0 5px #4ade80}
-    .ws-bar{flex-shrink:0;padding:8px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
-    .ws-label{font-weight:600}
-    .ws-input{background:var(--s2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:'Onest',sans-serif;font-size:12px;padding:4px 8px;width:64px;outline:none;transition:border-color .15s}
-    .ws-input:focus{border-color:var(--acc2)}
-    .ws-btn{background:var(--acc2);border:none;border-radius:7px;color:#fff;font-family:'Onest',sans-serif;font-size:11px;font-weight:700;padding:5px 11px;cursor:pointer;transition:opacity .18s}
-    .ws-btn:hover{opacity:.82}
-    .ws-btn.off{background:rgba(239,68,68,.2);color:#f87171}
 
     /* MESSAGES */
     .msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
@@ -235,16 +228,10 @@
       <div class="chat-meta">
         <div class="chat-name">AI Ассистент</div>
         <div class="chat-sub">
-          <span class="dot" id="connDot"></span>
-          <span id="connText">Не подключён</span>
+          <span class="dot on" id="connDot"></span>
+          <span id="connText">Готов к поиску</span>
         </div>
       </div>
-    </div>
-
-    <div class="ws-bar">
-      <span class="ws-label">Chat ID:</span>
-      <input class="ws-input" type="number" id="chatIdInput" placeholder="1" min="1"/>
-      <button class="ws-btn" id="wsBtn" onclick="wsToggle()">Подключить</button>
     </div>
 
     <div class="msgs" id="msgs">
@@ -290,6 +277,60 @@
   const WS_BASE  = "ws://localhost:8000/ws/chat";
 
   let currentPage = 1, totalPages = 1, currentFilter = {}, socket = null;
+  let chatId = null;  // Автоматически создаваемый chat ID
+  let isInitialized = false;  // Флаг инициализации
+
+  /* ─── INITIALIZATION ─── */
+  async function initializeChat() {
+    // Проверяем localStorage
+    const stored = localStorage.getItem("chatId");
+    if (stored) {
+      chatId = parseInt(stored);
+      return;  // Используем существующий чат
+    }
+
+    // Создаём новый чат
+    try {
+      const res = await fetch(`${API_BASE}/chats/`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          chat_type: "website",
+          language: "ru"
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        chatId = data.id;
+        localStorage.setItem("chatId", chatId);
+        console.log("✅ Chat created:", chatId);
+      }
+    } catch (e) {
+      console.error("Failed to create chat:", e);
+    }
+  }
+
+  async function autoConnectWS() {
+    if (!chatId || socket?.readyState === WebSocket.OPEN) return;
+
+    socket = new WebSocket(`${WS_BASE}/${chatId}`);
+    socket.onopen    = () => {
+      setConn(true);
+      addSys(`Чат инициализирован`);
+    };
+    socket.onmessage = e => {
+      hideTyping();
+      try { const d = JSON.parse(e.data); addMsg("assistant", d.message || e.data); }
+      catch { addMsg("assistant", e.data); }
+    };
+    socket.onclose  = () => { setConn(false); hideTyping(); };
+    socket.onerror  = () => { console.error("WS error"); setConn(false); hideTyping(); };
+  }
+
+  function setConn(on) {
+    document.getElementById("connDot").className    = `dot${on?" on":""}`;
+    document.getElementById("connText").textContent = on ? "Онлайн" : "Готов к поиску";
+  }
 
   /* ─── TOAST ─── */
   function toast(msg, type = "inf") {
@@ -370,16 +411,14 @@
       </div>`;
   }
 
-  /* ─── SMART SEARCH: parse intent from user message ─── */
+  /* ─── PARSE INTENT ─── */
   function parseIntent(text) {
     const t = text.toLowerCase();
     const filter = {};
 
-    // rooms
     const rMatch = t.match(/(\d+)\s*[-–]?\s*комн/);
     if (rMatch) { filter.min_rooms = parseInt(rMatch[1]); filter.max_rooms = parseInt(rMatch[1]); }
 
-    // price max
     const pMatch = t.match(/до\s*(\d[\d\s]*)\s*(тыс|к|тысяч)?/);
     if (pMatch) {
       let v = parseInt(pMatch[1].replace(/\s/g, ""));
@@ -387,21 +426,15 @@
       filter.max_price = v;
     }
 
-    // district keywords (common Bishkek districts)
     const districts = ["магистраль","политех","джал","асанбай","свердлова","тунгуч","вечерка","кок-джар","восток"];
     const foundDist = districts.find(d => t.includes(d));
     if (foundDist) filter.district = foundDist;
 
-    // urgent
     if (t.includes("срочн")) filter.is_urgent = true;
-
-    // owner
     if (t.includes("хозяин") || t.includes("собственник")) filter.is_owner = true;
 
-    // profitable?
     const isProfitable = t.includes("выгодн") || t.includes("дешев") || t.includes("скидк");
 
-    // is search intent?
     const isSearch = rMatch || pMatch || foundDist || filter.is_urgent || isProfitable ||
       t.includes("квартир") || t.includes("найди") || t.includes("покажи") || t.includes("есть ли");
 
@@ -449,10 +482,8 @@
       </div>`;
   }
 
-  /* ─── GENERATE AI TEXT RESPONSE ─── */
+  /* ─── GENERATE AI TEXT ─── */
   function generateAIText(text, flats, filter, isProfitable) {
-    const t = text.toLowerCase();
-
     if (isProfitable && flats.length) {
       return `Нашёл ${flats.length} выгодных квартиры — цена ниже рынка. Вот лучшие варианты:`;
     }
@@ -474,27 +505,23 @@
     return `Нашёл квартиры${desc}. Вот ${flats.length} вариант${flats.length === 1 ? "" : "а"} с фото:`;
   }
 
-  /* ─── HANDLE MESSAGE (with or without WS) ─── */
+  /* ─── HANDLE MESSAGE ─── */
   async function handleUserMessage(text) {
     const { filter, isProfitable, isSearch } = parseIntent(text);
 
-    // If WS connected — send to AI backend, also fetch flats locally
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ message: text }));
     }
 
-    // If search intent — fetch and show flat cards
     if (isSearch) {
       showTyping();
       const flats = await fetchFlatsForChat(filter, isProfitable);
       hideTyping();
 
       if (!socket || socket.readyState !== WebSocket.OPEN) {
-        // No WS — generate local AI text
         const aiText = generateAIText(text, flats, filter, isProfitable);
         addAIMessage(aiText, flats);
       } else {
-        // WS handles text; we just append cards to last AI bubble
         pendingFlats = flats;
       }
     }
@@ -502,7 +529,7 @@
 
   let pendingFlats = [];
 
-  /* ─── ADD AI MESSAGE WITH OPTIONAL FLAT CARDS ─── */
+  /* ─── ADD AI MESSAGE ─── */
   function addAIMessage(text, flats = []) {
     document.getElementById("emptyMsgs")?.remove();
     const msgs = document.getElementById("msgs");
@@ -526,7 +553,7 @@
     scrollDown();
   }
 
-  /* ─── ADD USER/SYSTEM MSG ─── */
+  /* ─── ADD MESSAGE ─── */
   function addMsg(role, text) {
     if (role === "assistant") { addAIMessage(text, pendingFlats); pendingFlats = []; return; }
     document.getElementById("emptyMsgs")?.remove();
@@ -559,50 +586,25 @@
   function hideTyping() { document.getElementById("typingRow").style.display = "none"; }
 
   /* ─── SEND ─── */
-  function sendMsg() {
+  async function sendMsg() {
     const el   = document.getElementById("msgInput");
     const text = el.value.trim();
     if (!text) return;
+
+    // Первое сообщение — инициализируем WS
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      await autoConnectWS();
+    }
+
     addMsg("user", text);
     handleUserMessage(text);
     el.value = ""; el.style.height = "auto"; el.focus();
-    // Hide suggest chips after first message
     document.getElementById("suggestChips").style.display = "none";
   }
 
   function quickSend(btn) { document.getElementById("msgInput").value = btn.textContent.replace(/^[^\s]+\s/, ""); sendMsg(); }
   function handleKey(e)   { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } }
   function autoResize(el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 100) + "px"; }
-
-  /* ─── WEBSOCKET ─── */
-  function wsToggle() {
-    (socket && socket.readyState === WebSocket.OPEN) ? disconnectWS() : connectWS();
-  }
-
-  function connectWS() {
-    const id = document.getElementById("chatIdInput").value.trim();
-    if (!id) { toast("Введите Chat ID", "err"); return; }
-    if (socket) socket.close();
-    socket = new WebSocket(`${WS_BASE}/${id}`);
-    socket.onopen    = () => { setConn(true, id); toast(`Чат #${id} подключён`, "ok"); addSys(`Подключено к чату #${id}`); };
-    socket.onmessage = e => {
-      hideTyping();
-      try { const d = JSON.parse(e.data); addMsg("assistant", d.message || e.data); }
-      catch { addMsg("assistant", e.data); }
-    };
-    socket.onclose  = () => { setConn(false); hideTyping(); addSys("Соединение закрыто"); };
-    socket.onerror  = () => { toast("Ошибка WebSocket", "err"); setConn(false); hideTyping(); };
-  }
-
-  function disconnectWS() { if (socket) { socket.close(); socket = null; } setConn(false); }
-
-  function setConn(on, id) {
-    document.getElementById("connDot").className    = `dot${on?" on":""}`;
-    document.getElementById("connText").textContent = on ? `Чат #${id} · онлайн` : "Не подключён";
-    const b = document.getElementById("wsBtn");
-    b.textContent = on ? "Отключить" : "Подключить";
-    b.className   = `ws-btn${on?" off":""}`;
-  }
 
   /* ─── MODAL ─── */
   function openModal(flat) {
@@ -689,7 +691,11 @@
   }
 
   /* ─── INIT ─── */
-  loadFlats(1, {});
+  async function init() {
+    await initializeChat();
+    loadFlats(1, {});
+  }
+  init();
 </script>
 </body>
 </html>
