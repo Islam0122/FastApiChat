@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 import aiohttp
 from aiohttp import ClientTimeout
@@ -17,6 +18,10 @@ def _get_session() -> aiohttp.ClientSession:
         headers={"Content-Type": "application/json"},
     )
 
+
+# ─────────────────────────────────────────────
+# Chats
+# ─────────────────────────────────────────────
 
 async def get_chats() -> list[dict] | None:
     try:
@@ -108,4 +113,107 @@ async def save_message(chat_id: int, role: str, text: str) -> dict | None:
                 return None
     except aiohttp.ClientError as e:
         logger.error("save_message error: %s", e)
+        return None
+
+
+# ─────────────────────────────────────────────
+# Flats
+# ─────────────────────────────────────────────
+
+async def get_flats(
+    page: int = 1,
+    search: Optional[str] = None,
+    min_price: Optional[int] = None,
+    max_price: Optional[int] = None,
+    min_area: Optional[float] = None,
+    max_area: Optional[float] = None,
+    min_rooms: Optional[int] = None,
+    max_rooms: Optional[int] = None,
+    district: Optional[str] = None,
+    source: Optional[str] = None,
+    is_urgent: Optional[bool] = None,
+    is_owner: Optional[bool] = None,
+    ordering: Optional[str] = None,
+) -> dict | None:
+    params: dict = {"page": page}
+    if search:      params["search"]    = search
+    if min_price:   params["min_price"] = min_price
+    if max_price:   params["max_price"] = max_price
+    if min_area:    params["min_area"]  = min_area
+    if max_area:    params["max_area"]  = max_area
+    if min_rooms:   params["min_rooms"] = min_rooms
+    if max_rooms:   params["max_rooms"] = max_rooms
+    if district:    params["district"]  = district
+    if source:      params["source"]    = source
+    if ordering:    params["ordering"]  = ordering
+    if is_urgent is not None: params["is_urgent"] = is_urgent
+    if is_owner  is not None: params["is_owner"]  = is_owner
+
+    try:
+        async with _get_session() as session:
+            async with session.get("flats/", params=params) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error("get_flats failed: %s", resp.status)
+                return None
+    except aiohttp.ClientError as e:
+        logger.error("get_flats error: %s", e)
+        return None
+
+
+async def get_flat(flat_id: int) -> dict | None:
+    try:
+        async with _get_session() as session:
+            async with session.get(f"flats/{flat_id}/") as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error("get_flat(%s) failed: %s", flat_id, resp.status)
+                return None
+    except aiohttp.ClientError as e:
+        logger.error("get_flat error: %s", e)
+        return None
+
+
+async def get_profitable_flats() -> dict | None:
+    try:
+        async with _get_session() as session:
+            async with session.get("flats/profitable/") as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error("get_profitable_flats failed: %s", resp.status)
+                return None
+    except aiohttp.ClientError as e:
+        logger.error("get_profitable_flats error: %s", e)
+        return None
+
+
+async def get_market_stats(
+    rooms: Optional[int] = None,
+    district: Optional[str] = None,
+) -> list | None:
+    params = {}
+    if rooms:    params["rooms"]    = rooms
+    if district: params["district"] = district
+    try:
+        async with _get_session() as session:
+            async with session.get("market-stats/", params=params) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error("get_market_stats failed: %s", resp.status)
+                return None
+    except aiohttp.ClientError as e:
+        logger.error("get_market_stats error: %s", e)
+        return None
+
+
+async def get_stats_summary() -> dict | None:
+    try:
+        async with _get_session() as session:
+            async with session.get("stats/") as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error("get_stats_summary failed: %s", resp.status)
+                return None
+    except aiohttp.ClientError as e:
+        logger.error("get_stats_summary error: %s", e)
         return None
