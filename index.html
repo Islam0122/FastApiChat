@@ -276,65 +276,91 @@
   const API_BASE = "https://django-production-cc9b.up.railway.app/api/v1";
   const WS_BASE  = "ws://localhost:8000/ws/chat";
 
-  let currentPage = 1, totalPages = 1, currentFilter = {}, socket = null;
-  let chatId = null;  // Автоматически создаваемый chat ID
-  let isInitialized = false;  // Флаг инициализации
+  let currentPage = 1, totalPages = 1, currentFilter = {};
+  let socket = null;
+  let isConnecting = false;
+  let chatId = null;
+  let pendingFlats = [];
+  let pendingQueue = [];
 
-  /* ─── INITIALIZATION ─── */
+  /* ─── INIT ─── */
+  async function init() {
+    await initializeChat();
+    autoConnectWS();
+    loadFlats(1, {});
+  }
+
   async function initializeChat() {
-    // Проверяем localStorage
     const stored = localStorage.getItem("chatId");
-    if (stored) {
-      chatId = parseInt(stored);
-      return;  // Используем существующий чат
-    }
-
-    // Создаём новый чат
+    if (stored) { chatId = parseInt(stored); return; }
     try {
       const res = await fetch(`${API_BASE}/chats/`, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          chat_type: "website",
-          language: "ru"
-        })
+        body: JSON.stringify({ chat_type: "website", language: "ru" })
       });
       if (res.ok) {
         const data = await res.json();
         chatId = data.id;
         localStorage.setItem("chatId", chatId);
-        console.log("✅ Chat created:", chatId);
       }
-    } catch (e) {
-      console.error("Failed to create chat:", e);
-    }
+    } catch(e) { console.error("Failed to create chat:", e); }
   }
 
-  async function autoConnectWS() {
-    if (!chatId || socket?.readyState === WebSocket.OPEN) return;
+  /* ─── WEBSOCKET ─── */
+  function autoConnectWS() {
+    if (!chatId) return;
+    if (isConnecting) return;
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
+    isConnecting = true;
     socket = new WebSocket(`${WS_BASE}/${chatId}`);
-    socket.onopen    = () => {
+
+    socket.onopen = async () => {
+      isConnecting = false;
       setConn(true);
-      addSys(`Чат инициализирован`);
+      while (pendingQueue.length > 0) {
+        const item = pendingQueue.shift();
+        socket.send(JSON.stringify({ message: item.text }));
+        if (item.isSearch) {
+          showTyping();
+          const flats = await fetchFlatsForChat(item.filter, item.isProfitable);
+          hideTyping();
+          pendingFlats = flats;
+        }
+      }
     };
+
     socket.onmessage = e => {
       hideTyping();
-      try { const d = JSON.parse(e.data); addMsg("assistant", d.message || e.data); }
-      catch { addMsg("assistant", e.data); }
+      try {
+        const d = JSON.parse(e.data);
+        addMsg("assistant", d.message || e.data);
+      } catch { addMsg("assistant", e.data); }
     };
-    socket.onclose  = () => { setConn(false); hideTyping(); };
-    socket.onerror  = () => { console.error("WS error"); setConn(false); hideTyping(); };
+
+    socket.onclose = () => {
+      isConnecting = false;
+      setConn(false);
+      hideTyping();
+      setTimeout(() => autoConnectWS(), 3000);
+    };
+
+    socket.onerror = () => {
+      isConnecting = false;
+      setConn(false);
+      hideTyping();
+    };
   }
 
   function setConn(on) {
-    document.getElementById("connDot").className    = `dot${on?" on":""}`;
-    document.getElementById("connText").textContent = on ? "Онлайн" : "Готов к поиску";
+    document.getElementById("connDot").className    = `dot${on ? " on" : ""}`;
+    document.getElementById("connText").textContent = on ? "Онлайн" : "Переподключение...";
   }
 
   /* ─── TOAST ─── */
   function toast(msg, type = "inf") {
-    const icons = {ok:"✅",err:"❌",inf:"💬"};
+    const icons = {ok:"✅", err:"❌", inf:"💬"};
     const el = document.createElement("div");
     el.className = `toast ${type}`;
     el.innerHTML = `<span>${icons[type]}</span> ${esc(msg)}`;
@@ -345,7 +371,7 @@
   /* ─── LOAD FLATS (grid) ─── */
   async function loadFlats(page = 1, filter = {}) {
     const grid = document.getElementById("flatsGrid");
-    grid.innerHTML = Array.from({length:6}, () => `
+    grid.innerHTML = Array.from({length: 6}, () => `
       <div class="skeleton">
         <div class="skel-img"></div>
         <div class="skel-body">
@@ -368,8 +394,9 @@
 
     const results = data.results || [];
     const total   = data.count || 0;
-    totalPages = Math.max(1, Math.ceil(total / 20));
+    totalPages  = Math.max(1, Math.ceil(total / 20));
     currentPage = page;
+
     document.getElementById("totalCount").textContent = total.toLocaleString("ru");
     document.getElementById("pageLabel").textContent  = `стр. ${page} из ${totalPages}`;
     document.getElementById("pageInfo").textContent   = `${page} / ${totalPages}`;
@@ -393,7 +420,7 @@
   }
 
   function buildGridCard(f) {
-    const imgSrc = f.first_image || "";
+    const imgSrc  = f.first_image || "";
     const imgHtml = imgSrc
       ? `<img class="card-img" src="${esc(imgSrc)}" alt="" loading="lazy" onerror="this.parentNode.innerHTML='<div class=card-img-placeholder>🏠</div>'">`
       : `<div class="card-img-placeholder">🏠</div>`;
@@ -405,9 +432,9 @@
         ${f.is_urgent ? '<div class="card-urgent">🔥 Срочно</div>' : ""}
       </div>
       <div class="card-body">
-        <div class="card-price">$${(f.price||0).toLocaleString("ru")}</div>
+        <div class="card-price">$${(f.price || 0).toLocaleString("ru")}</div>
         <div class="card-ppm2">${esc(ppm2)}</div>
-        <div class="card-title">${esc(f.title||"")}</div>
+        <div class="card-title">${esc(f.title || "")}</div>
       </div>`;
   }
 
@@ -417,7 +444,10 @@
     const filter = {};
 
     const rMatch = t.match(/(\d+)\s*[-–]?\s*комн/);
-    if (rMatch) { filter.min_rooms = parseInt(rMatch[1]); filter.max_rooms = parseInt(rMatch[1]); }
+    if (rMatch) {
+      filter.min_rooms = parseInt(rMatch[1]);
+      filter.max_rooms = parseInt(rMatch[1]);
+    }
 
     const pMatch = t.match(/до\s*(\d[\d\s]*)\s*(тыс|к|тысяч)?/);
     if (pMatch) {
@@ -428,15 +458,14 @@
 
     const districts = ["магистраль","политех","джал","асанбай","свердлова","тунгуч","вечерка","кок-джар","восток"];
     const foundDist = districts.find(d => t.includes(d));
-    if (foundDist) filter.district = foundDist;
+    if (foundDist) filter.district = foundDist.charAt(0).toUpperCase() + foundDist.slice(1);
 
     if (t.includes("срочн")) filter.is_urgent = true;
     if (t.includes("хозяин") || t.includes("собственник")) filter.is_owner = true;
 
     const isProfitable = t.includes("выгодн") || t.includes("дешев") || t.includes("скидк");
-
-    const isSearch = rMatch || pMatch || foundDist || filter.is_urgent || isProfitable ||
-      t.includes("квартир") || t.includes("найди") || t.includes("покажи") || t.includes("есть ли");
+    const isSearch = !!(rMatch || pMatch || foundDist || filter.is_urgent || isProfitable ||
+      t.includes("квартир") || t.includes("найди") || t.includes("покажи") || t.includes("есть ли"));
 
     return { filter, isProfitable, isSearch };
   }
@@ -457,50 +486,48 @@
 
   /* ─── BUILD CHAT FLAT CARD ─── */
   function buildChatFlatCard(f) {
-    const imgSrc = f.first_image || (f.images && f.images[0] && f.images[0].image_url) || "";
+    const imgSrc  = f.first_image || (f.images && f.images[0]?.image_url) || "";
     const imgHtml = imgSrc
       ? `<img class="cfc-img" src="${esc(imgSrc)}" alt="" loading="lazy" onerror="this.parentNode.innerHTML='<div class=cfc-img-ph>🏠</div>'">`
       : `<div class="cfc-img-ph">🏠</div>`;
-    const rooms   = f.rooms ? `${f.rooms}-комн.` : "";
-    const area    = f.area  ? `${f.area} м²` : "";
-    const floor   = f.floor_info || (f.floor ? `${f.floor}/${f.total_floors||"?"}` : "");
-    const ppm2    = f.price_per_m2 ? ` · ${Math.round(f.price_per_m2)} $/м²` : "";
+    const rooms    = f.rooms ? `${f.rooms}-комн.` : "";
+    const area     = f.area  ? `${f.area} м²` : "";
+    const floor    = f.floor_info || (f.floor ? `${f.floor}/${f.total_floors || "?"}` : "");
+    const ppm2     = f.price_per_m2 ? ` · ${Math.round(f.price_per_m2)} $/м²` : "";
     const metaParts = [rooms, area, floor].filter(Boolean).join(" · ");
 
     return `
-      <div class="chat-flat-card" onclick='openModal(${JSON.stringify(f).replace(/'/g,"&#39;")})'>
+      <div class="chat-flat-card" onclick='openModal(${JSON.stringify(f).replace(/'/g, "&#39;")})'>
         <div class="cfc-img-wrap">
           ${imgHtml}
           <div class="cfc-src">${f.source === "house" ? "House.kg" : "Lalafo"}</div>
         </div>
         <div class="cfc-body">
-          <div class="cfc-price">$${(f.price||0).toLocaleString("ru")}${ppm2}</div>
+          <div class="cfc-price">$${(f.price || 0).toLocaleString("ru")}${ppm2}</div>
           <div class="cfc-meta">${esc(metaParts)}</div>
-          <div class="cfc-addr">📍 ${esc(f.address||f.district||"—")}</div>
+          <div class="cfc-addr">📍 ${esc(f.address || f.district || "—")}</div>
         </div>
-        <a class="cfc-link" href="${esc(f.link||"#")}" target="_blank" onclick="event.stopPropagation()">↗ Открыть объявление</a>
+        <a class="cfc-link" href="${esc(f.link || "#")}" target="_blank" onclick="event.stopPropagation()">↗ Открыть объявление</a>
       </div>`;
   }
 
-  /* ─── GENERATE AI TEXT ─── */
+  /* ─── GENERATE AI TEXT (fallback без WS) ─── */
   function generateAIText(text, flats, filter, isProfitable) {
     if (isProfitable && flats.length) {
       return `Нашёл ${flats.length} выгодных квартиры — цена ниже рынка. Вот лучшие варианты:`;
     }
-    if (flats.length === 0) {
+    if (!flats.length) {
       const parts = [];
       if (filter.min_rooms) parts.push(`${filter.min_rooms}-комнатных`);
       if (filter.max_price) parts.push(`до $${filter.max_price.toLocaleString("ru")}`);
       if (filter.district)  parts.push(`в районе ${filter.district}`);
       return `К сожалению, по вашему запросу${parts.length ? " (" + parts.join(", ") + ")" : ""} ничего не нашлось. Попробуйте изменить фильтры.`;
     }
-
     const parts = [];
     if (filter.min_rooms) parts.push(`${filter.min_rooms}-комнатных`);
     if (filter.max_price) parts.push(`до $${filter.max_price.toLocaleString("ru")}`);
     if (filter.district)  parts.push(`в районе ${filter.district}`);
     if (filter.is_urgent) parts.push("срочных");
-
     const desc = parts.length ? ` (${parts.join(", ")})` : "";
     return `Нашёл квартиры${desc}. Вот ${flats.length} вариант${flats.length === 1 ? "" : "а"} с фото:`;
   }
@@ -509,36 +536,34 @@
   async function handleUserMessage(text) {
     const { filter, isProfitable, isSearch } = parseIntent(text);
 
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ message: text }));
-    }
-
-    if (isSearch) {
-      showTyping();
-      const flats = await fetchFlatsForChat(filter, isProfitable);
-      hideTyping();
-
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        const aiText = generateAIText(text, flats, filter, isProfitable);
-        addAIMessage(aiText, flats);
-      } else {
+      if (isSearch) {
+        showTyping();
+        const flats = await fetchFlatsForChat(filter, isProfitable);
+        hideTyping();
         pendingFlats = flats;
+      }
+    } else if (socket?.readyState === WebSocket.CONNECTING) {
+      pendingQueue.push({ text, filter, isProfitable, isSearch });
+    } else {
+      if (isSearch) {
+        showTyping();
+        const flats = await fetchFlatsForChat(filter, isProfitable);
+        hideTyping();
+        addAIMessage(generateAIText(text, flats, filter, isProfitable), flats);
       }
     }
   }
-
-  let pendingFlats = [];
 
   /* ─── ADD AI MESSAGE ─── */
   function addAIMessage(text, flats = []) {
     document.getElementById("emptyMsgs")?.remove();
     const msgs = document.getElementById("msgs");
-    const now  = new Date().toLocaleTimeString("ru", {hour:"2-digit", minute:"2-digit"});
-
+    const now  = new Date().toLocaleTimeString("ru", {hour: "2-digit", minute: "2-digit"});
     const cardsHtml = flats.length
       ? `<div class="chat-flats">${flats.map(f => buildChatFlatCard(f)).join("")}</div>`
       : "";
-
     const row = document.createElement("div");
     row.className = "msg-row assistant";
     row.innerHTML = `
@@ -548,7 +573,6 @@
         ${cardsHtml}
         <div class="msg-time">${now}</div>
       </div>`;
-
     msgs.insertBefore(row, document.getElementById("typingRow"));
     scrollDown();
   }
@@ -558,12 +582,11 @@
     if (role === "assistant") { addAIMessage(text, pendingFlats); pendingFlats = []; return; }
     document.getElementById("emptyMsgs")?.remove();
     const msgs = document.getElementById("msgs");
-    const now  = new Date().toLocaleTimeString("ru", {hour:"2-digit", minute:"2-digit"});
-    const av   = `<div class="msg-av user">👤</div>`;
+    const now  = new Date().toLocaleTimeString("ru", {hour: "2-digit", minute: "2-digit"});
     const row  = document.createElement("div");
     row.className = `msg-row ${role}`;
     row.innerHTML = `
-      ${av}
+      <div class="msg-av user">👤</div>
       <div class="msg-content">
         <div class="bubble">${esc(text)}</div>
         <div class="msg-time">${now}</div>
@@ -586,59 +609,54 @@
   function hideTyping() { document.getElementById("typingRow").style.display = "none"; }
 
   /* ─── SEND ─── */
-  async function sendMsg() {
+  function sendMsg() {
     const el   = document.getElementById("msgInput");
     const text = el.value.trim();
     if (!text) return;
-
-    // Первое сообщение — инициализируем WS
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      await autoConnectWS();
-    }
-
     addMsg("user", text);
     handleUserMessage(text);
     el.value = ""; el.style.height = "auto"; el.focus();
     document.getElementById("suggestChips").style.display = "none";
   }
 
-  function quickSend(btn) { document.getElementById("msgInput").value = btn.textContent.replace(/^[^\s]+\s/, ""); sendMsg(); }
+  function quickSend(btn) {
+    document.getElementById("msgInput").value = btn.textContent.replace(/^[^\s]+\s/, "");
+    sendMsg();
+  }
   function handleKey(e)   { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } }
   function autoResize(el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 100) + "px"; }
 
   /* ─── MODAL ─── */
   function openModal(flat) {
     if (typeof flat === "string") flat = JSON.parse(flat);
-    const imgs = (flat.images || []).map(i => i.image_url || i).filter(Boolean);
+    const imgs  = (flat.images || []).map(i => i.image_url || i).filter(Boolean);
     if (flat.first_image && !imgs.includes(flat.first_image)) imgs.unshift(flat.first_image);
     const first = imgs[0];
 
     const mainImgHtml = first
       ? `<img id="mImg" class="modal-img-main" src="${esc(first)}" alt="">`
       : `<div class="modal-img-ph">🏠</div>`;
-
     const thumbsHtml = imgs.length > 1
-      ? `<div class="modal-thumbs">${imgs.map((u,i)=>`<img class="thumb ${i===0?"on":""}" src="${esc(u)}" onclick="switchImg(this,'${esc(u)}')" alt="">`).join("")}</div>`
+      ? `<div class="modal-thumbs">${imgs.map((u, i) => `<img class="thumb ${i === 0 ? "on" : ""}" src="${esc(u)}" onclick="switchImg(this,'${esc(u)}')" alt="">`).join("")}</div>`
       : "";
-
-    const floor = flat.floor_info || (flat.floor ? `${flat.floor}/${flat.total_floors||"?"}` : "—");
+    const floor = flat.floor_info || (flat.floor ? `${flat.floor}/${flat.total_floors || "?"}` : "—");
 
     document.getElementById("modalContent").innerHTML = `
       ${mainImgHtml}${thumbsHtml}
       <div class="modal-body">
-        <div class="modal-price">$${(flat.price||0).toLocaleString("ru")}</div>
-        <div class="modal-subtitle">${esc(flat.title||"")}</div>
+        <div class="modal-price">$${(flat.price || 0).toLocaleString("ru")}</div>
+        <div class="modal-subtitle">${esc(flat.title || "")}</div>
         <div class="modal-stats">
-          <div class="stat-box"><div class="stat-label">Комнат</div><div class="stat-val">${flat.rooms||"—"}</div></div>
-          <div class="stat-box"><div class="stat-label">Площадь</div><div class="stat-val">${flat.area?flat.area+" м²":"—"}</div></div>
+          <div class="stat-box"><div class="stat-label">Комнат</div><div class="stat-val">${flat.rooms || "—"}</div></div>
+          <div class="stat-box"><div class="stat-label">Площадь</div><div class="stat-val">${flat.area ? flat.area + " м²" : "—"}</div></div>
           <div class="stat-box"><div class="stat-label">Этаж</div><div class="stat-val">${esc(floor)}</div></div>
-          <div class="stat-box"><div class="stat-label">$/м²</div><div class="stat-val">${flat.price_per_m2?Math.round(flat.price_per_m2):"—"}</div></div>
-          <div class="stat-box"><div class="stat-label">Район</div><div class="stat-val" style="font-size:11px">${esc(flat.district||"—")}</div></div>
-          <div class="stat-box"><div class="stat-label">Источник</div><div class="stat-val" style="font-size:11px">${flat.source==="house"?"House.kg":"Lalafo"}</div></div>
+          <div class="stat-box"><div class="stat-label">$/м²</div><div class="stat-val">${flat.price_per_m2 ? Math.round(flat.price_per_m2) : "—"}</div></div>
+          <div class="stat-box"><div class="stat-label">Район</div><div class="stat-val" style="font-size:11px">${esc(flat.district || "—")}</div></div>
+          <div class="stat-box"><div class="stat-label">Источник</div><div class="stat-val" style="font-size:11px">${flat.source === "house" ? "House.kg" : "Lalafo"}</div></div>
         </div>
-        <div class="modal-addr">📍 ${esc(flat.address||"—")}</div>
+        <div class="modal-addr">📍 ${esc(flat.address || "—")}</div>
         <div class="modal-actions">
-          <a class="btn-go" href="${esc(flat.link||"#")}" target="_blank">↗ Открыть объявление</a>
+          <a class="btn-go" href="${esc(flat.link || "#")}" target="_blank">↗ Открыть объявление</a>
           <button class="btn-x" onclick="closeModalDirect()">✕</button>
         </div>
       </div>`;
@@ -654,7 +672,7 @@
     if (m) { m.style.opacity = "0"; m.src = url; m.onload = () => (m.style.opacity = "1"); }
   }
 
-  function closeModal(e)  { if (e.target.id === "modalOverlay") closeModalDirect(); }
+  function closeModal(e)      { if (e.target.id === "modalOverlay") closeModalDirect(); }
   function closeModalDirect() { document.getElementById("modalOverlay").classList.remove("open"); document.body.style.overflow = ""; }
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeModalDirect(); });
 
@@ -666,13 +684,16 @@
         document.querySelectorAll("[data-rooms]").forEach(b => b.classList.remove("on"));
         btn.classList.add("on");
         delete currentFilter.min_rooms; delete currentFilter.max_rooms;
-        if (rooms) { if (rooms==="4") currentFilter.min_rooms=4; else {currentFilter.min_rooms=rooms;currentFilter.max_rooms=rooms;} }
+        if (rooms) {
+          if (rooms === "4") currentFilter.min_rooms = 4;
+          else { currentFilter.min_rooms = rooms; currentFilter.max_rooms = rooms; }
+        }
       } else if (urgent) {
         btn.classList.toggle("on");
-        btn.classList.contains("on") ? (currentFilter.is_urgent=true) : delete currentFilter.is_urgent;
+        btn.classList.contains("on") ? (currentFilter.is_urgent = true) : delete currentFilter.is_urgent;
       } else if (owner) {
         btn.classList.toggle("on");
-        btn.classList.contains("on") ? (currentFilter.is_owner=true) : delete currentFilter.is_owner;
+        btn.classList.contains("on") ? (currentFilter.is_owner = true) : delete currentFilter.is_owner;
       }
       loadFlats(1, currentFilter);
     };
@@ -687,14 +708,10 @@
   /* ─── UTILS ─── */
   function scrollDown() { const el = document.getElementById("msgs"); el.scrollTop = el.scrollHeight; }
   function esc(s) {
-    return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/\n/g,"<br>");
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\n/g, "<br>");
   }
 
-  /* ─── INIT ─── */
-  async function init() {
-    await initializeChat();
-    loadFlats(1, {});
-  }
+  /* ─── START ─── */
   init();
 </script>
 </body>
