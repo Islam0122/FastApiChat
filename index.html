@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Chat</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet"/>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f1117;
+      color: #e8eaf6;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: #16181f;
+      border-bottom: 1px solid #2a2d3e;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .header-avatar {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .header-info { flex: 1; }
+    .header-title { font-size: 15px; font-weight: 700; }
+    .header-sub {
+      font-size: 12px;
+      color: #8b90a7;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 1px;
+    }
+
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #6b7280;
+      transition: background .3s;
+    }
+    .status-dot.connected { background: #10b981; }
+
+    .ws-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: rgba(239,68,68,.15);
+      color: #ef4444;
+      transition: all .3s;
+    }
+    .ws-badge.connected {
+      background: rgba(16,185,129,.15);
+      color: #10b981;
+    }
+
+    /* ── Connect bar ── */
+    .connect-bar {
+      background: #1a1d27;
+      border-bottom: 1px solid #2a2d3e;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .connect-bar label {
+      font-size: 12px;
+      color: #8b90a7;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .connect-bar input {
+      background: #22263a;
+      border: 1px solid #2a2d3e;
+      border-radius: 8px;
+      color: #e8eaf6;
+      font-size: 13px;
+      padding: 7px 12px;
+      outline: none;
+      width: 100px;
+      transition: border .2s;
+    }
+    .connect-bar input:focus { border-color: #3b82f6; }
+
+    .btn-connect {
+      background: #3b82f6;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 16px;
+      cursor: pointer;
+      display: flex; align-items: center; gap: 6px;
+      transition: background .2s;
+    }
+    .btn-connect:hover { background: #2563eb; }
+
+    .btn-disconnect {
+      background: transparent;
+      border: 1px solid #ef4444;
+      border-radius: 8px;
+      color: #ef4444;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 16px;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      transition: all .2s;
+    }
+    .btn-disconnect:hover { background: rgba(239,68,68,.1); }
+
+    /* ── Messages ── */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .messages::-webkit-scrollbar { width: 4px; }
+    .messages::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 4px; }
+
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: #8b90a7;
+      text-align: center;
+      padding: 40px 20px;
+    }
+    .empty-state i { font-size: 52px; color: #2a2d3e; }
+    .empty-state h5 { font-size: 16px; color: #e8eaf6; font-weight: 600; }
+    .empty-state p { font-size: 13px; max-width: 240px; line-height: 1.5; }
+
+    .msg-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      animation: fadeUp .2s ease;
+    }
+    .msg-row.user { flex-direction: row-reverse; }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .msg-avatar {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .msg-avatar.ai   { background: linear-gradient(135deg, #3b82f6, #8b5cf6); }
+    .msg-avatar.user { background: linear-gradient(135deg, #10b981, #3b82f6); }
+
+    .msg-body { max-width: 70%; }
+
+    .msg-bubble {
+      padding: 10px 14px;
+      border-radius: 18px;
+      font-size: 14px;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+    .msg-row.user .msg-bubble {
+      background: #2563eb;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg-row.assistant .msg-bubble {
+      background: #22263a;
+      color: #e8eaf6;
+      border-bottom-left-radius: 4px;
+    }
+    .msg-row.system .msg-bubble {
+      background: rgba(245,158,11,.1);
+      color: #f59e0b;
+      font-size: 12px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .msg-row.system {
+      justify-content: center;
+    }
+
+    .msg-time {
+      font-size: 10px;
+      color: #8b90a7;
+      margin-top: 4px;
+      padding: 0 4px;
+    }
+    .msg-row.user .msg-time { text-align: right; }
+
+    /* ── Typing ── */
+    .typing-row {
+      display: none;
+      align-items: center;
+      gap: 8px;
+    }
+    .typing-dots {
+      background: #22263a;
+      padding: 10px 14px;
+      border-radius: 18px;
+      border-bottom-left-radius: 4px;
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .typing-dots span {
+      width: 7px; height: 7px;
+      background: #3b82f6;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: .2s; }
+    .typing-dots span:nth-child(3) { animation-delay: .4s; }
+
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30%           { transform: translateY(-6px); }
+    }
+
+    /* ── Input ── */
+    .input-area {
+      background: #16181f;
+      border-top: 1px solid #2a2d3e;
+      padding: 14px 20px;
+    }
+
+    .input-wrap {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      background: #22263a;
+      border: 1px solid #2a2d3e;
+      border-radius: 18px;
+      padding: 10px 14px;
+      transition: border .2s;
+    }
+    .input-wrap:focus-within { border-color: #3b82f6; }
+
+    #msgInput {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: #e8eaf6;
+      font-size: 14px;
+      outline: none;
+      resize: none;
+      max-height: 120px;
+      line-height: 1.5;
+      font-family: inherit;
+    }
+    #msgInput::placeholder { color: #8b90a7; }
+
+    .send-btn {
+      width: 36px; height: 36px;
+      background: #3b82f6;
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: background .2s, transform .1s;
+    }
+    .send-btn:hover  { background: #2563eb; }
+    .send-btn:active { transform: scale(.9); }
+
+    .input-hint {
+      font-size: 11px;
+      color: #8b90a7;
+      margin-top: 7px;
+      text-align: center;
+    }
+
+    /* ── Toast ── */
+    .toasts {
+      position: fixed;
+      bottom: 20px; right: 20px;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 999;
+    }
+    .toast {
+      background: #16181f;
+      border: 1px solid #2a2d3e;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 13px;
+      display: flex; align-items: center; gap: 8px;
+      animation: slideIn .25s ease;
+      box-shadow: 0 4px 20px rgba(0,0,0,.4);
+      min-width: 200px;
+    }
+    .toast.success { border-left: 3px solid #10b981; }
+    .toast.error   { border-left: 3px solid #ef4444; }
+    .toast.info    { border-left: 3px solid #3b82f6; }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(30px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-avatar">
+      <i class="bi bi-robot text-white"></i>
+    </div>
+    <div class="header-info">
+      <div class="header-title">AI Chat</div>
+      <div class="header-sub">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Не подключён</span>
+      </div>
+    </div>
+    <span class="ws-badge" id="wsBadge">Офлайн</span>
+  </div>
+
+  <!-- Connect bar -->
+  <div class="connect-bar">
+    <label><i class="bi bi-plug me-1"></i>Chat ID:</label>
+    <input type="number" id="chatIdInput" placeholder="1" min="1"/>
+    <button class="btn-connect" id="connectBtn" onclick="connectWS()">
+      <i class="bi bi-lightning-charge-fill"></i> Подключить
+    </button>
+    <button class="btn-disconnect" id="disconnectBtn" onclick="disconnectWS()">
+      <i class="bi bi-x-circle"></i> Отключить
+    </button>
+  </div>
+
+  <!-- Messages -->
+  <div class="messages" id="messages">
+    <div class="empty-state" id="emptyState">
+      <i class="bi bi-chat-dots"></i>
+      <h5>Начните диалог</h5>
+      <p>Введите Chat ID, нажмите «Подключить» и напишите сообщение.</p>
+    </div>
+
+    <!-- Typing indicator -->
+    <div class="typing-row" id="typingRow">
+      <div class="msg-avatar ai">
+        <i class="bi bi-robot text-white"></i>
+      </div>
+      <div class="typing-dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Input -->
+  <div class="input-area">
+    <div class="input-wrap">
+      <textarea
+        id="msgInput"
+        rows="1"
+        placeholder="Напишите сообщение…"
+        onkeydown="handleKey(event)"
+        oninput="autoResize(this)"
+      ></textarea>
+      <button class="send-btn" onclick="sendMessage()">
+        <i class="bi bi-send-fill"></i>
+      </button>
+    </div>
+    <div class="input-hint">Enter — отправить &nbsp;·&nbsp; Shift+Enter — новая строка</div>
+  </div>
+
+  <!-- Toasts -->
+  <div class="toasts" id="toasts"></div>
+
+<script>
+  const WS_BASE = "ws://localhost:8000/ws/chat";
+
+  let socket = null;
+
+  /* ── Toast ── */
+  function toast(msg, type = "info") {
+    const icons = {
+      success: "bi-check-circle-fill",
+      error:   "bi-x-circle-fill",
+      info:    "bi-info-circle-fill",
+    };
+    const colors = { success: "#10b981", error: "#ef4444", info: "#3b82f6" };
+    const el = document.createElement("div");
+    el.className = `toast ${type}`;
+    el.innerHTML = `<i class="bi ${icons[type]}" style="color:${colors[type]}"></i> ${msg}`;
+    document.getElementById("toasts").appendChild(el);
+    setTimeout(() => el.remove(), 3000);
+  }
+
+  /* ── WS status ── */
+  function setStatus(state) {
+    const dot   = document.getElementById("statusDot");
+    const text  = document.getElementById("statusText");
+    const badge = document.getElementById("wsBadge");
+    const cBtn  = document.getElementById("connectBtn");
+    const dBtn  = document.getElementById("disconnectBtn");
+
+    if (state === "connected") {
+      const id = document.getElementById("chatIdInput").value;
+      dot.classList.add("connected");
+      text.textContent = `Чат #${id} · онлайн`;
+      badge.textContent = "Онлайн";
+      badge.classList.add("connected");
+      cBtn.style.display = "none";
+      dBtn.style.display = "flex";
+    } else {
+      dot.classList.remove("connected");
+      text.textContent = "Не подключён";
+      badge.textContent = "Офлайн";
+      badge.classList.remove("connected");
+      cBtn.style.display = "flex";
+      dBtn.style.display = "none";
+    }
+  }
+
+  /* ── Connect ── */
+  function connectWS() {
+    const chatId = document.getElementById("chatIdInput").value.trim();
+    if (!chatId) { toast("Введите Chat ID", "error"); return; }
+    if (socket) { socket.close(); }
+
+    socket = new WebSocket(`${WS_BASE}/${chatId}`);
+
+    socket.onopen = () => {
+      setStatus("connected");
+      toast(`Подключён к чату #${chatId}`, "success");
+      addSystem(`Подключено к чату #${chatId}`);
+    };
+
+    socket.onmessage = (e) => {
+      hideTyping();
+      try {
+        const data = JSON.parse(e.data);
+        addMessage("assistant", data.message || e.data);
+      } catch {
+        addMessage("assistant", e.data);
+      }
+    };
+
+    socket.onclose = () => {
+      setStatus("disconnected");
+      hideTyping();
+      addSystem("Соединение закрыто");
+    };
+
+    socket.onerror = () => {
+      toast("Ошибка WebSocket", "error");
+      setStatus("disconnected");
+      hideTyping();
+    };
+  }
+
+  function disconnectWS() {
+    if (socket) { socket.close(); socket = null; }
+    setStatus("disconnected");
+  }
+
+  /* ── Messages ── */
+  function addMessage(role, text) {
+    document.getElementById("emptyState")?.remove();
+
+    const now = new Date().toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" });
+    const msgs = document.getElementById("messages");
+
+    const avatarHtml = role === "user"
+      ? `<div class="msg-avatar user"><i class="bi bi-person-fill text-white"></i></div>`
+      : `<div class="msg-avatar ai"><i class="bi bi-robot text-white"></i></div>`;
+
+    const row = document.createElement("div");
+    row.className = `msg-row ${role}`;
+    row.innerHTML = `
+      ${role !== "user" ? avatarHtml : ""}
+      <div class="msg-body">
+        <div class="msg-bubble">${escape(text)}</div>
+        <div class="msg-time">${now}</div>
+      </div>
+      ${role === "user" ? avatarHtml : ""}
+    `;
+
+    msgs.insertBefore(row, document.getElementById("typingRow"));
+    scrollDown();
+  }
+
+  function addSystem(text) {
+    document.getElementById("emptyState")?.remove();
+    const msgs = document.getElementById("messages");
+    const row = document.createElement("div");
+    row.className = "msg-row system";
+    row.innerHTML = `<div class="msg-bubble"><i class="bi bi-info-circle me-1"></i>${escape(text)}</div>`;
+    msgs.insertBefore(row, document.getElementById("typingRow"));
+    scrollDown();
+  }
+
+  function showTyping() {
+    document.getElementById("typingRow").style.display = "flex";
+    scrollDown();
+  }
+
+  function hideTyping() {
+    document.getElementById("typingRow").style.display = "none";
+  }
+
+  /* ── Send ── */
+  function sendMessage() {
+    const input = document.getElementById("msgInput");
+    const text = input.value.trim();
+
+    if (!text) return;
+
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      toast("Сначала подключитесь к чату", "error");
+      return;
+    }
+
+    addMessage("user", text);
+    socket.send(JSON.stringify({ message: text }));
+    showTyping();
+
+    input.value = "";
+    input.style.height = "auto";
+    input.focus();
+  }
+
+  function handleKey(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  /* ── Helpers ── */
+  function autoResize(el) {
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 120) + "px";
+  }
+
+  function scrollDown() {
+    const el = document.getElementById("messages");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function escape(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\n/g, "<br>");
+  }
+</script>
+</body>
+</html>
